@@ -56,3 +56,4 @@
 32. **钩子状态检测**：init 脚本导出 `JDKM_HOOK=zsh`；`local` / `global` 在钩子未启用时提示配置 `.zshrc`。
 33. **网络错误**：连接失败或超时时提示检查网络和代理（`HTTPS_PROXY` / `ALL_PROXY`）。
 34. **README 用中文**。
+35. **安装时先运行一次 `java -version`**（在 staging 目录里、移入 `versions/` 之前）：确认 JDK 能启动，失败则不安装；同时消化 macOS 首次启动的开销，避免 starship 等提示符工具在 `jdkm local` 后首次运行 `java` 时超时（500ms）。实测安装后首次运行约 6ms。

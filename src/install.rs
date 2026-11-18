@@ -8,6 +8,7 @@
 use std::fs::{self, File};
 use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, Result, bail};
@@ -188,10 +189,46 @@ pub fn install_archive(
         );
     }
 
+    // Still in staging: a JDK that does not start never reaches versions/.
+    let banner = verify_runs(&java_home)?;
+    eprintln!("Verified: {banner}");
+
     fs::rename(&java_home, &target)
         .with_context(|| format!("failed to move JDK into {}", target.display()))?;
     Ok(target)
     // `staging` (what is left of the archive, e.g. Contents/Info.plist) is deleted here.
+}
+
+/// Run `bin/java -version` once and return the first line of its output.
+///
+/// Two purposes:
+/// * prove the JDK actually starts on this machine;
+/// * absorb the slow *first* launch on macOS (code-signature assessment,
+///   cold disk cache). Otherwise the first `java` run happens right after
+///   `jdkm local`, e.g. by the starship prompt, which times out at 500 ms.
+///   Running it from the staging directory is fine: the rename into
+///   `versions/` keeps the same files, so the warm-up carries over.
+fn verify_runs(java_home: &Path) -> Result<String> {
+    let java = java_home.join("bin").join("java");
+    let output = Command::new(&java)
+        .arg("-version")
+        .output()
+        .with_context(|| format!("failed to run {}", java.display()))?;
+    // `java -version` prints to stderr.
+    let text = String::from_utf8_lossy(&output.stderr);
+    if !output.status.success() {
+        bail!(
+            "the downloaded JDK does not run (`java -version` exited with {}):\n{}",
+            output.status,
+            text.trim()
+        );
+    }
+    let first_line = text.lines().next().unwrap_or_default().trim();
+    Ok(if first_line.is_empty() {
+        "java starts".to_string()
+    } else {
+        first_line.to_string()
+    })
 }
 
 /// JDK archives contain exactly one top-level directory, e.g. `jdk-21.0.5+11/`.
@@ -299,6 +336,38 @@ mod tests {
             err.to_string().contains("unexpected archive layout"),
             "{err}"
         );
+        assert_eq!(fs::read_dir(home.versions_dir()).unwrap().count(), 0);
+        assert_eq!(fs::read_dir(home.tmp_dir()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn verifies_java_runs_and_reports_version() {
+        let (tmp, home) = temp_home();
+        let archive = tmp.path().join("jdk.tar.gz");
+        let java = "#!/bin/sh\necho 'openjdk version \"21.0.5\" 2024-10-15' >&2\n";
+        make_tar_gz(&archive, &[("jdk-21.0.5+11/bin/java", java)]);
+
+        let java_home =
+            install_archive(&home, &archive, "temurin-21.0.5+11", Os::Linux, "t").unwrap();
+        // The installed JDK runs, and the banner is the first line of `java -version`.
+        assert_eq!(
+            verify_runs(&java_home).unwrap(),
+            r#"openjdk version "21.0.5" 2024-10-15"#
+        );
+    }
+
+    #[test]
+    fn broken_jdk_never_reaches_versions() {
+        let (tmp, home) = temp_home();
+        let archive = tmp.path().join("jdk.tar.gz");
+        let java = "#!/bin/sh\necho 'dyld: missing symbol' >&2\nexit 3\n";
+        make_tar_gz(&archive, &[("jdk-21.0.5+11/bin/java", java)]);
+
+        let err =
+            install_archive(&home, &archive, "temurin-21.0.5+11", Os::Linux, "t").unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("does not run"), "{msg}");
+        assert!(msg.contains("dyld: missing symbol"), "{msg}");
         assert_eq!(fs::read_dir(home.versions_dir()).unwrap().count(), 0);
         assert_eq!(fs::read_dir(home.tmp_dir()).unwrap().count(), 0);
     }
