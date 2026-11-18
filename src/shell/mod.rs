@@ -12,6 +12,10 @@ use crate::env::Action;
 /// so the binary knows its output will be `eval`ed.
 pub const WRAPPER_VAR: &str = "JDKM_SHELL";
 
+/// Exported by the init script, so commands can tell whether the hook is
+/// active in the user's shell and warn if it is not.
+pub const HOOK_VAR: &str = "JDKM_HOOK";
+
 pub trait Shell {
     /// Render one environment change as a shell statement.
     fn render(&self, action: &Action) -> String;

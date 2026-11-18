@@ -6,8 +6,7 @@
 //! ├── current -> versions/...      symlink to the global default (for IDEs)
 //! ├── default                      global default version
 //! ├── cache/                       downloads and remote release list cache
-//! ├── tmp/                         staging area for atomic installs
-//! └── config.toml
+//! └── tmp/                         staging area for atomic installs
 //! ```
 
 use std::ffi::OsString;
@@ -66,10 +65,6 @@ impl JdkmHome {
         self.root.join("tmp")
     }
 
-    #[allow(dead_code)] // TODO(milestone 5): used by mirror configuration
-    pub fn config_file(&self) -> PathBuf {
-        self.root.join("config.toml")
-    }
 
     /// Create the directory layout if it does not exist yet. Idempotent.
     pub fn ensure_layout(&self) -> Result<()> {

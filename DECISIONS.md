@@ -49,3 +49,10 @@
 28. **GITHUB_TOKEN 只发给 `api.github.com`**，下载文件不带 token。
 29. **中断清理**：Ctrl-C 时析构函数不运行，`tmp/` 可能残留；下次 install 开始时删除 `tmp/` 中超过 1 小时的条目。
 30. **reqwest 0.13** 中 rustls 特性名为 `rustls`（旧版叫 `rustls-tls`），已确认依赖树中没有 native-tls / openssl。
+
+## 里程碑 5
+
+31. **这一版不做镜像**（用户决定）：TUNA 在当前网络下无法访问（HTTPS 握手失败、HTTP 403），无法按 SPEC 要求实地确认目录结构；GitHub 直连已足够快（200MB 约 20 秒）。因此也不引入 `config.toml` 和 `toml` 依赖。以后要加镜像时的建议方案：config 中配置下载 URL 模板，镜像只用于下载大文件，版本列表和 SHA-256 仍来自 GitHub（镜像内容同样被校验），镜像 404 时回退 GitHub。
+32. **钩子状态检测**：init 脚本导出 `JDKM_HOOK=zsh`；`local` / `global` 在钩子未启用时提示配置 `.zshrc`。
+33. **网络错误**：连接失败或超时时提示检查网络和代理（`HTTPS_PROXY` / `ALL_PROXY`）。
+34. **README 用中文**。

@@ -4,7 +4,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 use reqwest::StatusCode;
-use reqwest::blocking::{Client, Response};
+use reqwest::blocking::{Client, RequestBuilder, Response};
 use reqwest::header::{ACCEPT, AUTHORIZATION, HeaderMap, LINK};
 use serde::de::DeserializeOwned;
 
@@ -50,9 +50,7 @@ impl Http {
         {
             req = req.header(AUTHORIZATION, format!("Bearer {token}"));
         }
-        let resp = req
-            .send()
-            .with_context(|| format!("request to {url} failed"))?;
+        let resp = send(req, url)?;
         check_rate_limit(&resp)?;
         let resp = resp
             .error_for_status()
@@ -77,23 +75,38 @@ impl Http {
 
     /// GET a small text resource (e.g. a checksum file).
     pub fn get_text(&self, url: &str) -> Result<String> {
-        self.client
-            .get(url)
-            .timeout(API_TIMEOUT)
-            .send()
-            .and_then(Response::error_for_status)
+        send(self.client.get(url).timeout(API_TIMEOUT), url)?
+            .error_for_status()
             .and_then(Response::text)
             .with_context(|| format!("failed to download {url}"))
     }
 
     /// Start a (possibly large) download; the caller streams the body.
     pub fn get_stream(&self, url: &str) -> Result<Response> {
-        self.client
-            .get(url)
-            .send()
-            .and_then(Response::error_for_status)
+        send(self.client.get(url), url)?
+            .error_for_status()
             .with_context(|| format!("failed to download {url}"))
     }
+}
+
+/// Send a request; connection problems get a hint about network/proxy.
+fn send(req: RequestBuilder, url: &str) -> Result<Response> {
+    req.send().map_err(|err| {
+        let hint = if err.is_connect() || err.is_timeout() {
+            let host = err
+                .url()
+                .and_then(|u| u.host_str())
+                .unwrap_or(url)
+                .to_string();
+            format!(
+                "cannot reach {host}. Check your network connection or proxy settings \
+                 (HTTPS_PROXY / ALL_PROXY)"
+            )
+        } else {
+            format!("request to {url} failed")
+        };
+        anyhow::Error::new(err).context(hint)
+    })
 }
 
 /// Did this request fail with HTTP 404?

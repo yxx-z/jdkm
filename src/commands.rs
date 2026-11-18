@@ -30,8 +30,9 @@ pub fn list_remote(home: &JdkmHome, major: Option<u32>, refresh: bool) -> Result
 
     let Some(major) = major else {
         // One cheap API call (cached): just the major versions.
+        let majors = dist.majors(refresh)?; // fetch before printing anything
         println!("Available {} major versions:", dist.name());
-        for m in dist.majors(refresh)? {
+        for m in majors {
             println!("  {m}{}", if is_lts(m) { " (LTS)" } else { "" });
         }
         println!("\nRun `jdkm list-remote --major <N>` to see all versions of one major.");
@@ -150,7 +151,19 @@ pub fn global(home: &JdkmHome, version: &str) -> Result<()> {
     let jdk = installed::require(home, &request)?;
     installed::set_default(home, &jdk)?;
     println!("Global default set to {}", jdk.name);
+    warn_if_hook_inactive();
     Ok(())
+}
+
+/// `local`/`global` only change files; without the shell hook nothing
+/// re-reads them, which looks like "jdkm does not work". Say so.
+fn warn_if_hook_inactive() {
+    if std::env::var_os(shell::HOOK_VAR).is_none() {
+        eprintln!(
+            "note: jdkm's shell integration is not active here, so `java` and JAVA_HOME will not switch.\n      \
+             Add this to ~/.zshrc and open a new terminal:  eval \"$(jdkm init zsh)\""
+        );
+    }
 }
 
 pub fn local(home: &JdkmHome, version: &str) -> Result<()> {
@@ -168,6 +181,7 @@ pub fn local(home: &JdkmHome, version: &str) -> Result<()> {
         path.display(),
         jdk.name
     );
+    warn_if_hook_inactive();
     Ok(())
 }
 

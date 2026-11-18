@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use super::{Shell, WRAPPER_VAR, quote};
+use super::{HOOK_VAR, Shell, WRAPPER_VAR, quote};
 use crate::env::Action;
 
 pub struct Zsh;
@@ -17,6 +17,7 @@ impl Shell for Zsh {
         INIT_TEMPLATE
             .replace("__JDKM_EXE__", &quote(&exe.to_string_lossy()))
             .replace("__WRAPPER_VAR__", WRAPPER_VAR)
+            .replace("__HOOK_VAR__", HOOK_VAR)
     }
 }
 
@@ -29,6 +30,8 @@ const INIT_TEMPLATE: &str = r#"# jdkm shell integration for zsh
 # Add to ~/.zshrc:  eval "$(jdkm init zsh)"
 
 _jdkm_bin=__JDKM_EXE__
+# Lets `jdkm local/global` know the hook is active.
+export __HOOK_VAR__=zsh
 
 jdkm() {
   if [[ "$1" == "shell" ]]; then
