@@ -2,16 +2,18 @@ mod cli;
 mod commands;
 mod env;
 mod error;
+mod install;
 mod installed;
 mod paths;
 mod platform;
+mod remote;
 mod resolve;
 mod shell;
 mod version;
 
 use std::process::ExitCode;
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use clap::Parser;
 
 use cli::{Cli, Command};
@@ -37,8 +39,8 @@ fn run(command: Command) -> Result<()> {
     }
 
     match command {
-        Command::ListRemote { .. } => not_implemented("list-remote"),
-        Command::Install { .. } => not_implemented("install"),
+        Command::ListRemote { major, refresh } => commands::list_remote(&home, major, refresh),
+        Command::Install { version } => commands::install(&home, &version),
         Command::Uninstall { version } => commands::uninstall(&home, &version),
         Command::List => commands::list(&home),
         Command::Global { version } => commands::global(&home, &version),
@@ -49,8 +51,4 @@ fn run(command: Command) -> Result<()> {
         Command::Env { shell } => commands::env(&home, shell),
         Command::Init { shell } => commands::init(shell),
     }
-}
-
-fn not_implemented(name: &str) -> Result<()> {
-    bail!("`{name}` is not implemented yet")
 }

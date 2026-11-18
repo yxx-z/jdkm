@@ -36,6 +36,15 @@ impl Version {
     pub fn has_build(&self) -> bool {
         !self.build.is_empty()
     }
+
+    pub fn major(&self) -> u32 {
+        self.numbers[0] // parse() guarantees at least one number
+    }
+
+    /// Version as it appears in Temurin asset names: `21.0.5+11` -> `21.0.5_11`.
+    pub fn underscored(&self) -> String {
+        self.to_string().replace('+', "_")
+    }
 }
 
 /// Parse `"21.0.5"` into `[21, 0, 5]`. Returns `None` on any bad component.
@@ -138,6 +147,10 @@ impl VersionRequest {
     /// The version part without the distribution prefix, e.g. `17`.
     pub fn version_str(&self) -> String {
         self.version.to_string()
+    }
+
+    pub fn major(&self) -> u32 {
+        self.version.major()
     }
 
     pub fn not_installed(&self) -> JdkmError {

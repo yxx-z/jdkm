@@ -1,6 +1,7 @@
 //! Implementations of the subcommands. Each function does the user-facing
 //! part (printing); the logic lives in the library-like modules.
 
+use std::collections::HashSet;
 use std::fs;
 
 use anyhow::{Context, Result, bail};
@@ -8,11 +9,115 @@ use anyhow::{Context, Result, bail};
 use crate::cli::ShellKind;
 use crate::env::{self, Action, ShellState};
 use crate::error::JdkmError;
+use crate::install;
 use crate::installed;
 use crate::paths::JdkmHome;
+use crate::platform::Os;
+use crate::remote::http::Http;
+use crate::remote::temurin::Temurin;
+use crate::remote::{Distribution, is_lts};
 use crate::resolve::{self, Inputs, VERSION_ENV, VERSION_FILE};
 use crate::shell;
 use crate::version::VersionRequest;
+
+/// How many of the newest matching releases to try when the newest one has
+/// no build for this platform (respins are sometimes platform-specific).
+const MAX_INSTALL_CANDIDATES: usize = 3;
+
+pub fn list_remote(home: &JdkmHome, major: Option<u32>, refresh: bool) -> Result<()> {
+    let http = Http::new()?;
+    let dist = Temurin::new(&http, home.cache_dir())?;
+
+    let Some(major) = major else {
+        // One cheap API call (cached): just the major versions.
+        println!("Available {} major versions:", dist.name());
+        for m in dist.majors(refresh)? {
+            println!("  {m}{}", if is_lts(m) { " (LTS)" } else { "" });
+        }
+        println!("\nRun `jdkm list-remote --major <N>` to see all versions of one major.");
+        return Ok(());
+    };
+
+    let releases = dist.releases(major, refresh)?;
+    if releases.is_empty() {
+        println!("No GA releases of {} {major} yet.", dist.name());
+        return Ok(());
+    }
+    let installed: HashSet<String> = installed::list_installed(home)?
+        .into_iter()
+        .map(|j| j.name)
+        .collect();
+    for release in releases {
+        let name = format!("{}-{}", dist.name(), release.version);
+        let mark = if installed.contains(&name) {
+            "  (installed)"
+        } else {
+            ""
+        };
+        println!("  {}{mark}", release.version);
+    }
+    Ok(())
+}
+
+pub fn install(home: &JdkmHome, version: &str) -> Result<()> {
+    let request = VersionRequest::parse(version)?;
+    install::clean_stale_tmp(home);
+
+    let http = Http::new()?;
+    let dist = Temurin::new(&http, home.cache_dir())?;
+    let os = Os::current()?;
+
+    let matching = |refresh| -> Result<Vec<_>> {
+        Ok(dist
+            .releases(request.major(), refresh)?
+            .into_iter()
+            .filter(|r| request.matches(&r.version))
+            .take(MAX_INSTALL_CANDIDATES)
+            .collect())
+    };
+    let mut candidates = matching(false)?;
+    if candidates.is_empty() {
+        // Maybe the version is newer than our cached list.
+        candidates = matching(true)?;
+    }
+    if candidates.is_empty() {
+        bail!(
+            "no {} release matches `{request}`. Run: jdkm list-remote --major {}",
+            dist.name(),
+            request.major()
+        );
+    }
+
+    for release in &candidates {
+        let name = format!("{}-{}", dist.name(), release.version);
+        if home.versions_dir().join(&name).exists() {
+            println!("{name} is already installed");
+            return Ok(());
+        }
+        let Some(artifact) = dist.artifact(release)? else {
+            eprintln!("note: {name} has no build for this platform; trying an older release");
+            continue;
+        };
+
+        eprintln!("Installing {name}");
+        let java_home = install::download_and_install(home, &http, &artifact, &name, os)?;
+        println!("Installed {name} to {}", java_home.display());
+
+        // DECISIONS.md #3: the first JDK becomes the global default.
+        if installed::read_default(home)?.is_none() {
+            let jdk = installed::require(home, &VersionRequest::parse(&name)?)?;
+            installed::set_default(home, &jdk)?;
+            println!("Set {name} as the global default");
+        }
+        return Ok(());
+    }
+    bail!(
+        "no {}/{} build found for the newest {} releases matching `{request}`",
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        dist.name()
+    )
+}
 
 pub fn list(home: &JdkmHome) -> Result<()> {
     let all = installed::list_installed(home)?;
