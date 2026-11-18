@@ -6,6 +6,10 @@
 # Asset names carry no version (jdkm-aarch64-apple-darwin.tar.gz), so
 # install.sh can always fetch releases/latest/download/<name> without
 # calling the GitHub API.
+#
+# Everything runs in ONE job on ONE macOS runner: x86_64 is cross-compiled on
+# the Apple Silicon runner. A matrix with two macOS jobs got stuck waiting for
+# a second runner ("not acquired by Runner ... capacity constraints").
 
 name: release
 
@@ -17,12 +21,11 @@ permissions:
   contents: write
 
 jobs:
-  build:
-    strategy:
-      matrix:
-        target: [aarch64-apple-darwin, x86_64-apple-darwin]
-    # Apple Silicon runner; the x86_64 build is cross-compiled on it.
+  release:
     runs-on: macos-latest
+    timeout-minutes: 30
+    env:
+      TARGETS: aarch64-apple-darwin x86_64-apple-darwin
     steps:
       - uses: actions/checkout@v7
 
@@ -34,42 +37,33 @@ jobs:
             exit 1
           fi
 
-      - name: Install Rust target
-        run: rustup target add ${{ matrix.target }}
+      - name: Install Rust targets
+        run: rustup target add $TARGETS
 
       - name: Test
-        if: matrix.target == 'aarch64-apple-darwin'
         run: cargo test --locked
 
       - name: Build
-        run: cargo build --release --locked --target ${{ matrix.target }}
+        run: |
+          for t in $TARGETS; do
+            cargo build --release --locked --target "$t"
+          done
 
       - name: Package
         run: |
-          name=jdkm-${{ matrix.target }}
-          tar -C target/${{ matrix.target }}/release -czf "$name.tar.gz" jdkm
-          shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256"
-          cat "$name.tar.gz.sha256"
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: jdkm-${{ matrix.target }}
-          path: jdkm-${{ matrix.target }}.tar.gz*
-
-  release:
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/download-artifact@v8
-        with:
-          path: dist
-          merge-multiple: true
+          mkdir dist
+          for t in $TARGETS; do
+            name="jdkm-$t.tar.gz"
+            tar -C "target/$t/release" -czf "dist/$name" jdkm
+            (cd dist && shasum -a 256 "$name" > "$name.sha256")
+            file "target/$t/release/jdkm"
+          done
+          cat dist/*.sha256
 
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          ls -l dist
           gh release create "$GITHUB_REF_NAME" dist/* \
             --repo "$GITHUB_REPOSITORY" \
             --title "$GITHUB_REF_NAME" \

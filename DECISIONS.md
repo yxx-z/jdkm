@@ -60,7 +60,7 @@
 
 ## 一键安装 / 卸载
 
-36. **仓库公开 + GitHub Actions 预编译**（用户决定）：推 `v*` tag 时在 macos-latest 上编译 aarch64 与 x86_64（交叉编译）二进制，资产名不带版本号（`jdkm-aarch64-apple-darwin.tar.gz` + `.sha256`），`install.sh` 直接用 `releases/latest/download/…`，无需调用 API。tag 必须与 Cargo.toml 版本一致，否则 CI 失败。
+36. **仓库公开 + GitHub Actions 预编译**（用户决定）：推 `v*` tag 时在**一台** macos-latest 上依次编译 aarch64 与 x86_64（交叉编译）二进制并发布（最初用两台 runner 的 matrix，x86 任务两次都因 GitHub macOS 容量不足分不到 runner 被取消），资产名不带版本号（`jdkm-aarch64-apple-darwin.tar.gz` + `.sha256`），`install.sh` 直接用 `releases/latest/download/…`，无需调用 API。tag 必须与 Cargo.toml 版本一致，否则 CI 失败。
 37. **二进制装在 `~/.jdkm/bin`**（用户决定），`.zshrc` 中用 `# >>> jdkm >>>` / `# <<< jdkm <<<` 标记的块添加 PATH 和钩子，重复安装不重复写入，卸载按标记精确删除。
 38. **安装脚本的版本变量叫 `JDKM_INSTALL_VERSION`**，避免与 `jdkm shell` 用的 `JDKM_VERSION` 冲突。Rosetta 下的 x86 终端也安装原生 arm64 版本。
 39. **不静默修改用户手写的配置**：发现块外的 `jdkm init` 行或 PATH 中另一个 jdkm（如 `~/.cargo/bin`）时只给警告。写 `.zshrc` 用追加 / 重定向，保持 dotfiles 软链接。
