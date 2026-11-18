@@ -25,8 +25,6 @@ pub struct JdkmHome {
     root: PathBuf,
 }
 
-// TODO(milestone 2): remove once every path accessor is used by a command.
-#[allow(dead_code)]
 impl JdkmHome {
     /// Locate the root from the real process environment.
     pub fn from_env() -> Result<Self> {
@@ -68,6 +66,7 @@ impl JdkmHome {
         self.root.join("tmp")
     }
 
+    #[allow(dead_code)] // TODO(milestone 5): used by mirror configuration
     pub fn config_file(&self) -> PathBuf {
         self.root.join("config.toml")
     }

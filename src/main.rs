@@ -1,5 +1,11 @@
 mod cli;
+mod commands;
+mod error;
+mod installed;
 mod paths;
+mod platform;
+mod resolve;
+mod version;
 
 use std::process::ExitCode;
 
@@ -31,13 +37,13 @@ fn run(command: Command) -> Result<()> {
     match command {
         Command::ListRemote { .. } => not_implemented("list-remote"),
         Command::Install { .. } => not_implemented("install"),
-        Command::Uninstall { .. } => not_implemented("uninstall"),
-        Command::List => not_implemented("list"),
-        Command::Global { .. } => not_implemented("global"),
+        Command::Uninstall { version } => commands::uninstall(&home, &version),
+        Command::List => commands::list(&home),
+        Command::Global { version } => commands::global(&home, &version),
         Command::Local { .. } => not_implemented("local"),
         Command::Shell { .. } => not_implemented("shell"),
-        Command::Current => not_implemented("current"),
-        Command::Which { .. } => not_implemented("which"),
+        Command::Current => commands::current(&home),
+        Command::Which { cmd } => commands::which(&home, &cmd),
         Command::Env => not_implemented("env"),
         Command::Init { .. } => not_implemented("init"),
     }

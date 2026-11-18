@@ -184,6 +184,7 @@ dependencies = [
  "clap",
  "dirs",
  "tempfile",
+ "thiserror",
 ]
 
 [[package]]
