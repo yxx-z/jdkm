@@ -70,7 +70,11 @@ pub enum Command {
     },
 
     /// Print export statements for the current directory (used by the shell hook)
-    Env,
+    Env {
+        /// Shell syntax to print
+        #[arg(long, value_enum, default_value_t = ShellKind::Zsh)]
+        shell: ShellKind,
+    },
 
     /// Print the shell hook script to add to your shell config
     Init {
@@ -94,7 +98,7 @@ impl Command {
             Command::List
                 | Command::Current
                 | Command::Which { .. }
-                | Command::Env
+                | Command::Env { .. }
                 | Command::Init { .. }
                 | Command::Shell { .. }
         )

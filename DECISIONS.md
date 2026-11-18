@@ -29,3 +29,12 @@
 14. **远程列表缓存**：24 小时过期，`list-remote --refresh` 强制刷新。
 15. **额外依赖**：`tempfile`（dev-dependency；安装时临时目录也可能用到）。暂不加 `assert_cmd`。
 16. **Rust edition**：2024。
+
+## 实现中补充的决定（里程碑 2–3）
+
+17. **`uninstall` 必须唯一匹配**：`jdkm uninstall 21` 匹配到多个 21.x 时报错并列出候选，不自动选最新（删除不可撤销）。
+18. **`local` / `global` / `shell` 要求版本已安装**，否则报 `JDK 17 is not installed. Run: jdkm install 17`。
+19. **空白的 `.java-version` 视为不存在**，继续向上查找。
+20. **错误只提示一次的实现**：`jdkm env` 把上次报过的错误存在 shell 变量 `_JDKM_LAST_ERROR` 里，相同就不再输出；问题消失后清除。
+21. **`jdkm init zsh` 输出的脚本里写入二进制的绝对路径**（`current_exe()`），钩子不依赖 PATH 查找，也更快。
+22. **`jdkm shell` 的实现**：shell 函数以 `JDKM_SHELL=zsh` 调用二进制并 `eval` 其 stdout；直接调用二进制（没装钩子）时报错并提示配置 `.zshrc`。提示信息走 stderr，stdout 只放给 `eval` 的代码。

@@ -1,10 +1,12 @@
 mod cli;
 mod commands;
+mod env;
 mod error;
 mod installed;
 mod paths;
 mod platform;
 mod resolve;
+mod shell;
 mod version;
 
 use std::process::ExitCode;
@@ -40,12 +42,12 @@ fn run(command: Command) -> Result<()> {
         Command::Uninstall { version } => commands::uninstall(&home, &version),
         Command::List => commands::list(&home),
         Command::Global { version } => commands::global(&home, &version),
-        Command::Local { .. } => not_implemented("local"),
-        Command::Shell { .. } => not_implemented("shell"),
+        Command::Local { version } => commands::local(&home, &version),
+        Command::Shell { version, unset } => commands::shell(&home, version.as_deref(), unset),
         Command::Current => commands::current(&home),
         Command::Which { cmd } => commands::which(&home, &cmd),
-        Command::Env => not_implemented("env"),
-        Command::Init { .. } => not_implemented("init"),
+        Command::Env { shell } => commands::env(&home, shell),
+        Command::Init { shell } => commands::init(shell),
     }
 }
 
