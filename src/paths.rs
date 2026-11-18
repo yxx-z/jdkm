@@ -65,7 +65,6 @@ impl JdkmHome {
         self.root.join("tmp")
     }
 
-
     /// Create the directory layout if it does not exist yet. Idempotent.
     pub fn ensure_layout(&self) -> Result<()> {
         for dir in [self.versions_dir(), self.cache_dir(), self.tmp_dir()] {
