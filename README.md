@@ -9,25 +9,40 @@
 
 ## 安装
 
-需要 Rust 工具链（`rustup`）。
-
 ```bash
-git clone https://github.com/yxx-z/jdkm.git
-cd jdkm
-cargo install --path .
+curl -fsSL https://raw.githubusercontent.com/yxx-z/jdkm/main/install.sh | sh
 ```
 
-二进制会被安装到 `~/.cargo/bin/jdkm`。请确认 `~/.cargo/bin` 在 `PATH` 中。
+然后打开一个新终端。安装脚本会：
 
-## 配置 zsh
-
-在 `~/.zshrc` **末尾**加入：
+1. 按 CPU 架构（Apple Silicon / Intel）从 GitHub Releases 下载预编译的二进制，校验 SHA-256 后放到 `~/.jdkm/bin/jdkm`
+2. 在 `~/.zshrc` 末尾加一段配置（以 `# >>> jdkm >>>` 开头），重复运行不会重复添加
 
 ```zsh
+# >>> jdkm >>>
+export PATH="$HOME/.jdkm/bin:$PATH"
 eval "$(jdkm init zsh)"
+# <<< jdkm <<<
 ```
 
-然后打开一个新终端。这行脚本会做三件事：
+升级 jdkm 时，重新运行同一行命令即可。如果要安装指定版本：`curl … | JDKM_INSTALL_VERSION=v0.1.0 sh`。
+
+<details>
+<summary>从源码安装</summary>
+
+需要 Rust 工具链（`rustup`）：
+
+```bash
+git clone https://github.com/yxx-z/jdkm.git && cd jdkm
+cargo install --path .        # 安装到 ~/.cargo/bin/jdkm
+```
+
+然后在 `~/.zshrc` 末尾手动加上 `eval "$(jdkm init zsh)"`。
+</details>
+
+## shell 集成做了什么
+
+`eval "$(jdkm init zsh)"` 会做三件事：
 
 - 注册一个 `precmd` 钩子，每次显示提示符前根据当前目录切换 JDK。`jdkm local` 之后不需要 `cd` 就会生效。
 - 定义一个 `jdkm` shell 函数，让 `jdkm shell <版本>` 能修改当前终端的环境。
@@ -79,6 +94,7 @@ jdkm: version 17 set by /Users/me/projA/.java-version: JDK 17 is not installed. 
 
 ```
 ~/.jdkm/                        可用环境变量 JDKM_HOME 覆盖
+├── bin/jdkm                    jdkm 本身（通过一键脚本安装时）
 ├── versions/
 │   ├── temurin-17.0.21+9/      每个目录本身就是 JAVA_HOME
 │   └── temurin-21.0.13.1+2/
@@ -120,18 +136,31 @@ token 只会发送给 `api.github.com`。
 
 ## 卸载 jdkm
 
-```zsh
-cargo uninstall jdkm
-rm -rf ~/.jdkm       # 会删除所有通过 jdkm 安装的 JDK
+删除 jdkm 本身和 `~/.zshrc` 里的配置，**保留**已安装的 JDK：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/yxx-z/jdkm/main/uninstall.sh | sh
 ```
 
-然后从 `~/.zshrc` 删掉 `eval "$(jdkm init zsh)"` 这一行。
+连同所有已安装的 JDK（整个 `~/.jdkm`）一起删除：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/yxx-z/jdkm/main/uninstall.sh | sh -s -- --all
+```
+
+卸载前会把 `~/.zshrc` 备份为 `~/.zshrc.jdkm-backup`，确认没问题后可以删掉这个备份。如果是从源码安装的，再运行一次 `cargo uninstall jdkm`。
 
 ## 开发
 
 ```bash
 cargo test
 cargo clippy --all-targets
+```
+
+发布新版本：修改 `Cargo.toml` 里的 `version`，提交后打一个同名 tag 并推送。GitHub Actions 会编译 macOS aarch64 和 x86_64 两个二进制，并发布到 Releases。
+
+```bash
+git tag v0.1.0 && git push origin v0.1.0
 ```
 
 设计决策记录在 [DECISIONS.md](DECISIONS.md)，需求在 [SPEC.md](SPEC.md)。

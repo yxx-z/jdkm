@@ -57,3 +57,11 @@
 33. **网络错误**：连接失败或超时时提示检查网络和代理（`HTTPS_PROXY` / `ALL_PROXY`）。
 34. **README 用中文**。
 35. **安装时先运行一次 `java -version`**（在 staging 目录里、移入 `versions/` 之前）：确认 JDK 能启动，失败则不安装；同时消化 macOS 首次启动的开销，避免 starship 等提示符工具在 `jdkm local` 后首次运行 `java` 时超时（500ms）。实测安装后首次运行约 6ms。
+
+## 一键安装 / 卸载
+
+36. **仓库公开 + GitHub Actions 预编译**（用户决定）：推 `v*` tag 时在 macos-latest 上编译 aarch64 与 x86_64（交叉编译）二进制，资产名不带版本号（`jdkm-aarch64-apple-darwin.tar.gz` + `.sha256`），`install.sh` 直接用 `releases/latest/download/…`，无需调用 API。tag 必须与 Cargo.toml 版本一致，否则 CI 失败。
+37. **二进制装在 `~/.jdkm/bin`**（用户决定），`.zshrc` 中用 `# >>> jdkm >>>` / `# <<< jdkm <<<` 标记的块添加 PATH 和钩子，重复安装不重复写入，卸载按标记精确删除。
+38. **安装脚本的版本变量叫 `JDKM_INSTALL_VERSION`**，避免与 `jdkm shell` 用的 `JDKM_VERSION` 冲突。Rosetta 下的 x86 终端也安装原生 arm64 版本。
+39. **不静默修改用户手写的配置**：发现块外的 `jdkm init` 行或 PATH 中另一个 jdkm（如 `~/.cargo/bin`）时只给警告。写 `.zshrc` 用追加 / 重定向，保持 dotfiles 软链接。
+40. **卸载默认保留 JDK**，`--all` 才删除整个 `JDKM_HOME`，且拒绝删除 `/`、`$HOME` 或不像 jdkm 目录的路径；修改前备份 `.zshrc`。
