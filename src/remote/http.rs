@@ -1,9 +1,9 @@
 //! Thin wrapper around a blocking reqwest client (rustls, no system OpenSSL).
 
 use std::io::{self, Read};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use reqwest::StatusCode;
 use reqwest::blocking::{Client, RequestBuilder, Response};
 use reqwest::header::{ACCEPT, AUTHORIZATION, HeaderMap, LINK, RANGE};
@@ -23,6 +23,11 @@ impl Http {
         let client = Client::builder()
             .user_agent(concat!("jdkm/", env!("CARGO_PKG_VERSION")))
             .connect_timeout(Duration::from_secs(15))
+            // In reqwest's blocking client this bounds the wait for the
+            // response headers and for *each* read of the body, not the
+            // whole transfer: a download that stalls for 30 s fails (and
+            // can resume or switch source), a slow one that keeps moving
+            // does not. Requests that need a total deadline set their own.
             .timeout(Duration::from_secs(30))
             .build()
             .context("failed to create HTTP client")?;
@@ -75,32 +80,72 @@ impl Http {
 
     /// GET a small text resource (e.g. a checksum file).
     pub fn get_text(&self, url: &str) -> Result<String> {
-        send(self.client.get(url).timeout(API_TIMEOUT), url)?
+        self.get_text_within(url, API_TIMEOUT)
+    }
+
+    fn get_text_within(&self, url: &str, timeout: Duration) -> Result<String> {
+        send(self.client.get(url).timeout(timeout), url)?
             .error_for_status()
             .and_then(Response::text)
             .with_context(|| format!("failed to download {url}"))
     }
 
-    pub fn json<T: DeserializeOwned>(&self, url: &str) -> Result<T> {
-        serde_json::from_str(&self.get_text(url)?)
+    /// GET and decode a JSON document, giving up after `timeout`.
+    pub fn json<T: DeserializeOwned>(&self, url: &str, timeout: Duration) -> Result<T> {
+        serde_json::from_str(&self.get_text_within(url, timeout)?)
             .with_context(|| format!("unexpected response from {url}"))
     }
 
+    /// Read the first `bytes` of `url` within `timeout`.
     pub fn probe(&self, url: &str, bytes: u64, timeout: Duration) -> Result<()> {
         let request = self
             .client
             .get(url)
             .header(RANGE, format!("bytes=0-{}", bytes - 1))
             .timeout(timeout);
-        let response = send(request, url)?.error_for_status()?;
+        let response = send(request, url)?
+            .error_for_status()
+            .map_err(reqwest::Error::without_url)?;
         let copied = io::copy(&mut response.take(bytes), &mut io::sink())?;
-        anyhow::ensure!(copied == bytes, "short probe response");
+        ensure!(copied == bytes, "short probe response");
         Ok(())
     }
 
-    /// Start a (possibly large) download; the caller streams the body.
-    pub fn get_stream(&self, url: &str) -> Result<Response> {
-        send(self.client.get(url), url)?
+    /// Download from `offset` for up to `window` (or `max` bytes) and
+    /// return the observed throughput in bytes per second. The data is
+    /// discarded; this only answers "would this source be faster?".
+    pub fn measure(&self, url: &str, offset: u64, max: u64, window: Duration) -> Result<f64> {
+        let start = Instant::now();
+        let request = self
+            .client
+            .get(url)
+            .header(RANGE, format!("bytes={offset}-"))
+            .timeout(window * 2);
+        let mut response = send(request, url)?
+            .error_for_status()
+            .map_err(reqwest::Error::without_url)?;
+        let mut buf = vec![0u8; 64 * 1024];
+        let mut got = 0u64;
+        while got < max && start.elapsed() < window {
+            let n = response.read(&mut buf)?;
+            if n == 0 {
+                break;
+            }
+            got += n as u64;
+        }
+        ensure!(got > 0, "no data received");
+        Ok(got as f64 / start.elapsed().as_secs_f64())
+    }
+
+    /// Start a (possibly large) download at byte `offset`; the caller
+    /// streams the body and must check for `206 Partial Content` when
+    /// `offset > 0`, since a server may ignore the range and send it all.
+    pub fn get_from(&self, url: &str, offset: u64) -> Result<Response> {
+        let mut request = self.client.get(url);
+        if offset > 0 {
+            request = request.header(RANGE, format!("bytes={offset}-"));
+        }
+        send(request, url)?
             .error_for_status()
             .map_err(reqwest::Error::without_url)
             .with_context(|| format!("failed to download {url}"))

@@ -12,6 +12,7 @@
 //!   with a `<asset>.sha256.txt` next to it: "<hex>  <file name>".
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail, ensure};
 use serde::Deserialize;
@@ -26,6 +27,14 @@ const API: &str = "https://api.github.com";
 const ORG: &str = "adoptium";
 const ADOPTIUM: &str = "https://api.adoptium.net/v3";
 const TUNA: &str = "https://mirrors.tuna.tsinghua.edu.cn/Adoptium";
+/// TUNA mirrors only these majors, and only the newest build of each
+/// (tuna/tunasync-scripts `adoptium.py`, checked 2026-11-18).
+const TUNA_MAJORS: [u32; 5] = [8, 11, 17, 21, 25];
+const TUNA_NOTE: &str = "the TUNA mirror only keeps the newest Temurin build of JDK 11, 17, 21 and 25 \
+     (new releases can take a day to appear there); downloading from GitHub";
+/// The Adoptium API is a second opinion on the checksum; don't let a slow
+/// answer hold up the install for long.
+const ADOPTIUM_TIMEOUT: Duration = Duration::from_secs(10);
 /// Safety net against endless pagination.
 const MAX_PAGES: usize = 10;
 
@@ -128,7 +137,7 @@ impl<'a> Temurin<'a> {
             let url = format!(
                 "{ADOPTIUM}/info/release_names?version=%5B{major},{end}%29&release_type=ga&vendor=eclipse&project=jdk&page_size=20&page={page}"
             );
-            let result: ReleaseNames = match self.http.json(&url) {
+            let result: ReleaseNames = match self.http.json(&url, ADOPTIUM_TIMEOUT) {
                 Err(err) if page > 0 && http::is_not_found(&err) => break,
                 other => other?,
             };
@@ -149,27 +158,28 @@ impl<'a> Temurin<'a> {
         sha256: String,
     ) -> Artifact {
         let file_name = self.asset_name(&release.version);
-        let mirror = format!(
-            "{TUNA}/{}/jdk/{}/{}/{}",
-            release.version.major(),
-            self.arch.temurin_name(),
-            self.os.temurin_name(),
-            file_name
-        );
+        let major = release.version.major();
+        let mut sources = vec![DownloadSource {
+            name: "GitHub",
+            url,
+            missing_note: None,
+        }];
+        if TUNA_MAJORS.contains(&major) {
+            sources.push(DownloadSource {
+                name: "TUNA",
+                url: format!(
+                    "{TUNA}/{major}/jdk/{}/{}/{file_name}",
+                    self.arch.temurin_name(),
+                    self.os.temurin_name(),
+                ),
+                missing_note: Some(TUNA_NOTE),
+            });
+        }
         Artifact {
             file_name,
             size,
             sha256,
-            sources: [
-                DownloadSource {
-                    name: "GitHub",
-                    url,
-                },
-                DownloadSource {
-                    name: "TUNA",
-                    url: mirror,
-                },
-            ],
+            sources,
         }
     }
 
@@ -179,7 +189,7 @@ impl<'a> Temurin<'a> {
             self.arch.temurin_name(),
             self.os.temurin_name()
         );
-        let result: ApiRelease = match self.http.json(&url) {
+        let result: ApiRelease = match self.http.json(&url, ADOPTIUM_TIMEOUT) {
             Err(err) if http::is_not_found(&err) => return Ok(None),
             other => other?,
         };
@@ -273,41 +283,71 @@ impl Distribution for Temurin<'_> {
 
         let wanted = self.asset_name(&release.version);
         let checksum_name = format!("{wanted}.sha256.txt");
-        let archive = gh.assets.iter().find(|a| a.name == wanted);
-        let checksum = gh.assets.iter().find(|a| a.name == checksum_name);
-        match (archive, checksum) {
-            (Some(archive), Some(checksum)) => {
-                let expected = match self.http.get_text(&checksum.browser_download_url) {
-                    Ok(text) => parse_checksum(&text)?,
-                    Err(err) => {
-                        self.api_artifact(release, &tag)?
-                            .context(format!("no official checksum available: {err:#}"))?
-                            .sha256
-                    }
-                };
-                if let Some(digest) = archive
-                    .digest
-                    .as_deref()
-                    .and_then(|d| d.strip_prefix("sha256:"))
-                {
-                    ensure!(
-                        expected.eq_ignore_ascii_case(digest),
-                        "official checksum sources disagree for {wanted}; refusing to install"
-                    );
+        let Some(archive) = gh.assets.iter().find(|a| a.name == wanted) else {
+            return Ok(None);
+        };
+        let checksum_file = gh.assets.iter().find(|a| a.name == checksum_name);
+        let digest = archive
+            .digest
+            .as_deref()
+            .and_then(|d| d.strip_prefix("sha256:"))
+            .map(parse_checksum)
+            .transpose()?;
+        let expected = official_sha256(
+            &wanted,
+            digest,
+            || Ok(self.api_artifact(release, &tag)?.map(|a| a.sha256)),
+            checksum_file.map(|c| {
+                || -> Result<String> {
+                    parse_checksum(&self.http.get_text(&c.browser_download_url)?)
                 }
-                Ok(Some(self.build_artifact(
-                    release,
-                    archive.browser_download_url.clone(),
-                    archive.size,
-                    expected,
-                )))
-            }
-            (Some(_), None) => {
-                bail!("{wanted} has no published SHA-256 checksum; refusing to install")
-            }
-            (None, _) => Ok(None),
-        }
+            }),
+        )?;
+        Ok(Some(self.build_artifact(
+            release,
+            archive.browser_download_url.clone(),
+            archive.size,
+            expected,
+        )))
     }
+}
+
+/// Settle the archive's SHA-256 from official sources, preferring ones
+/// served by API hosts. The `.sha256.txt` asset lives on GitHub's download
+/// CDN — the host that is slow or unreachable in some regions, which is why
+/// we have mirrors at all — so it is fetched only when nothing else works.
+///
+/// * GitHub's asset digest, cross-checked against the Adoptium API when
+///   that answers (a disagreement refuses the install).
+/// * No digest (older assets): the Adoptium API, else the checksum file.
+fn official_sha256(
+    file: &str,
+    github_digest: Option<String>,
+    adoptium: impl FnOnce() -> Result<Option<String>>,
+    checksum_file: Option<impl FnOnce() -> Result<String>>,
+) -> Result<String> {
+    let from_adoptium = adoptium();
+    if let Some(digest) = github_digest {
+        if let Ok(Some(other)) = &from_adoptium {
+            ensure!(
+                *other == digest,
+                "official checksum sources disagree for {file}: GitHub says {digest}, \
+                 Adoptium says {other}; refusing to install"
+            );
+        }
+        return Ok(digest);
+    }
+    let api_problem = match from_adoptium {
+        Ok(Some(sha256)) => return Ok(sha256),
+        Ok(None) => "Adoptium API does not list it".to_string(),
+        Err(err) => format!("{err:#}"),
+    };
+    let Some(fetch) = checksum_file else {
+        bail!("{file} has no published SHA-256 checksum ({api_problem}); refusing to install");
+    };
+    fetch().with_context(|| {
+        format!("no official checksum available for {file} (Adoptium API: {api_problem})")
+    })
 }
 
 /// `temurin21-binaries` -> 21
@@ -393,6 +433,64 @@ mod tests {
             format!("{TUNA}/21/jdk/aarch64/mac/{wanted}")
         );
         assert!(artifact.sources[0].url.ends_with(wanted));
+    }
+
+    type FileFetch = fn() -> Result<String>;
+
+    #[test]
+    fn checksum_prefers_api_hosts_over_the_download_cdn() {
+        let a = "a".repeat(64);
+        let b = "b".repeat(64);
+        let never: Option<FileFetch> = Some(|| panic!("must not touch the download CDN"));
+
+        // GitHub digest, confirmed or unconfirmed by Adoptium.
+        let got = official_sha256("f", Some(a.clone()), || Ok(Some(a.clone())), never);
+        assert_eq!(got.unwrap(), a);
+        let got = official_sha256("f", Some(a.clone()), || bail!("offline"), never);
+        assert_eq!(got.unwrap(), a);
+        let got = official_sha256("f", Some(a.clone()), || Ok(None), never);
+        assert_eq!(got.unwrap(), a);
+        // ...but a disagreement is fatal.
+        let err = official_sha256("f", Some(a.clone()), || Ok(Some(b.clone())), never);
+        assert!(err.unwrap_err().to_string().contains("disagree"));
+
+        // No digest: Adoptium first, the checksum file only as a last resort.
+        let got = official_sha256("f", None, || Ok(Some(b.clone())), never);
+        assert_eq!(got.unwrap(), b);
+        let file: Option<FileFetch> = Some(|| Ok("c".repeat(64)));
+        let got = official_sha256("f", None, || bail!("offline"), file);
+        assert_eq!(got.unwrap(), "c".repeat(64));
+        let err = official_sha256("f", None, || Ok(None), None::<FileFetch>).unwrap_err();
+        assert!(err.to_string().contains("no published SHA-256"));
+    }
+
+    #[test]
+    fn tuna_is_offered_only_for_the_majors_it_mirrors() {
+        let http = Http::new().unwrap();
+        let temurin = Temurin {
+            http: &http,
+            cache_dir: PathBuf::new(),
+            os: Os::Mac,
+            arch: Arch::X64,
+        };
+        let sources = |version: &str| {
+            let release = Release {
+                version: Version::parse(version).unwrap(),
+                tag: format!("jdk-{version}"),
+            };
+            temurin
+                .build_artifact(&release, "https://github.com/x".into(), 1, "a".repeat(64))
+                .sources
+                .iter()
+                .map(|s| s.name)
+                .collect::<Vec<_>>()
+        };
+        for lts in ["11.0.29+7", "17.0.17+10", "21.0.9+10", "25.0.1+8"] {
+            assert_eq!(sources(lts), ["GitHub", "TUNA"], "{lts}");
+        }
+        for other in ["22.0.2+9", "24.0.2+12", "26+35"] {
+            assert_eq!(sources(other), ["GitHub"], "{other}");
+        }
     }
 
     #[test]

@@ -26,7 +26,8 @@ pub struct Release {
 #[derive(Debug, Clone)]
 pub struct Artifact {
     pub file_name: String,
-    pub sources: [DownloadSource; 2],
+    /// Equivalent places to download the same file, official first.
+    pub sources: Vec<DownloadSource>,
     /// Size in bytes as reported by the source (0 if unknown).
     pub size: u64,
     /// Locked from official metadata before contacting any mirror.
@@ -37,6 +38,9 @@ pub struct Artifact {
 pub struct DownloadSource {
     pub name: &'static str,
     pub url: String,
+    /// Shown when this source turns out not to have the file and nothing
+    /// else answered quickly, e.g. why a mirror lacks some versions.
+    pub missing_note: Option<&'static str>,
 }
 
 pub trait Distribution {

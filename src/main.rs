@@ -1,5 +1,6 @@
 mod cli;
 mod commands;
+mod download;
 mod env;
 mod error;
 mod install;
