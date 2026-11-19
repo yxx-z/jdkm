@@ -26,6 +26,10 @@ impl Shell for Zsh {
 // * `jdkm shell ...` must change *this* shell's environment, which a child
 //   process cannot do; the function evals the binary's output instead.
 // * Re-sourcing .zshrc must not register the hook twice.
+// * The binary's absolute path is baked in (no PATH lookup per prompt), but
+//   a terminal can outlive that path: jdkm reinstalled elsewhere or
+//   uninstalled. Then look it up on PATH once; if it is gone for good, say
+//   so once and unhook, instead of an error before every prompt.
 const INIT_TEMPLATE: &str = r#"# jdkm shell integration for zsh
 # Add to ~/.zshrc:  eval "$(jdkm init zsh)"
 
@@ -33,7 +37,20 @@ _jdkm_bin=__JDKM_EXE__
 # Lets `jdkm local/global` know the hook is active.
 export __HOOK_VAR__=zsh
 
+# Make sure $_jdkm_bin still exists; if it moved, find it on PATH.
+_jdkm_locate() {
+  [[ -x "$_jdkm_bin" ]] && return 0
+  rehash
+  local found
+  found=$(whence -p jdkm) || return 1
+  _jdkm_bin=$found
+}
+
 jdkm() {
+  if ! _jdkm_locate; then
+    print -ru2 -- "jdkm: executable not found (was $_jdkm_bin)"
+    return 127
+  fi
   if [[ "$1" == "shell" ]]; then
     local _jdkm_out
     _jdkm_out="$(__WRAPPER_VAR__=zsh "$_jdkm_bin" "$@")" || return
@@ -45,6 +62,12 @@ jdkm() {
 }
 
 _jdkm_hook() {
+  if ! _jdkm_locate; then
+    print -ru2 -- "jdkm: executable not found (was $_jdkm_bin); JDK switching is off in this terminal. Open a new terminal after reinstalling."
+    chpwd_functions=(${chpwd_functions:#_jdkm_hook})
+    precmd_functions=(${precmd_functions:#_jdkm_hook})
+    return 0
+  fi
   eval "$("$_jdkm_bin" env --shell zsh)"
 }
 

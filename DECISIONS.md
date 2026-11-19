@@ -75,3 +75,4 @@
     - 允许拼接不同来源的片段，因为整体仍由官方 SHA-256 把关；一旦不符，丢弃整份文件，改为每次只用一个源重新下载，单独产出坏文件的源不再使用。
 42. **同时使用 chpwd 和 precmd**：前者保障同行命令获得新目录的环境，后者处理不切目录的配置变化。重复初始化不重复注册。
 43. **校验值优先取自 API 主机**：GitHub 资产的 `digest` 为主，并与 Adoptium API 的 checksum 交叉检查（Adoptium 不可用时只用 digest，不一致则拒绝安装）；没有 digest 的旧资产先用 Adoptium API，最后才下载 `.sha256.txt`。原因：`.sha256.txt` 和压缩包同在 GitHub 下载 CDN 上，那正是部分地区慢或不通的主机，先去取它会让镜像的作用打折扣。
+44. **钩子在二进制丢失时自愈或自停**：init 脚本里写死了二进制路径（#21），终端可能比这个路径活得久（迁移安装位置、卸载）。钩子每次先检查该路径；不存在就 `rehash` 后用 `whence -p jdkm` 在 PATH 里找新位置；仍找不到则只提示一次并从 `chpwd_functions` / `precmd_functions` 中移除自己，`jdkm` 包装函数返回 127。起因：用户从 `~/.cargo/bin` 迁移到 `~/.jdkm/bin` 后，旧终端每个提示符都报 `no such file or directory`。
