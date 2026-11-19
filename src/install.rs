@@ -10,6 +10,7 @@ use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, SystemTime};
+use std::{sync::mpsc, thread};
 
 use anyhow::{Context, Result, bail};
 use flate2::read::GzDecoder;
@@ -18,8 +19,8 @@ use sha2::{Digest, Sha256};
 
 use crate::paths::JdkmHome;
 use crate::platform::Os;
-use crate::remote::Artifact;
 use crate::remote::http::Http;
+use crate::remote::{Artifact, DownloadSource};
 
 /// Deletes a file or directory when dropped — on success, on `?` early
 /// return, or on panic. Rust's version of try/finally cleanup (RAII).
@@ -60,53 +61,77 @@ pub fn download_and_install(
     let tag = format!("{name}.{}", std::process::id());
     let archive = TempPath::new(home.tmp_dir().join(format!("{tag}.tar.gz")));
 
-    let expected = fetch_checksum(http, &artifact.checksum_url)?;
-    if let Some(github) = &artifact.github_sha256
-        && *github != expected
-    {
-        bail!(
-            "checksum sources disagree for {}: {} says {expected}, GitHub says {github}; refusing to install",
-            artifact.file_name,
-            artifact.checksum_url
-        );
-    }
-    let actual = download(http, artifact, archive.path())?;
-    if actual != expected {
-        // `archive` is dropped on return, deleting the bad file.
-        bail!(
-            "SHA-256 mismatch for {}: expected {expected}, got {actual}. The download was deleted; please retry.",
-            artifact.file_name
-        );
-    }
+    download_verified(http, artifact, archive.path())?;
     eprintln!("SHA-256 verified");
 
     install_archive(home, archive.path(), name, os, &tag)
     // `archive` is dropped here: the tarball is deleted (DECISIONS.md #4).
 }
 
-/// The checksum file's first word, validated as 64 hex digits.
-fn fetch_checksum(http: &Http, url: &str) -> Result<String> {
-    let text = http.get_text(url)?;
-    parse_checksum(&text).with_context(|| format!("malformed checksum file {url}"))
-}
+const PROBE_BYTES: u64 = 256 * 1024;
+const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 
-fn parse_checksum(text: &str) -> Result<String> {
-    let word = text
-        .split_whitespace()
-        .next()
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    if word.len() != 64 || !word.chars().all(|c| c.is_ascii_hexdigit()) {
-        bail!("expected a SHA-256 hex digest, got `{word}`");
+fn preferred_source(http: &Http, artifact: &Artifact) -> usize {
+    let bytes = if artifact.size == 0 {
+        PROBE_BYTES
+    } else {
+        PROBE_BYTES.min(artifact.size)
+    };
+    let (sender, receiver) = mpsc::channel();
+    for (index, source) in artifact.sources.iter().enumerate() {
+        let http = http.clone();
+        let sender = sender.clone();
+        let url = source.url.clone();
+        thread::spawn(move || {
+            if http.probe(&url, bytes, PROBE_TIMEOUT).is_ok() {
+                let _ = sender.send(index);
+            }
+        });
     }
-    Ok(word)
+    drop(sender);
+    receiver.recv_timeout(PROBE_TIMEOUT).unwrap_or(0)
 }
 
-/// Stream the archive to `dest` with a progress bar, hashing as we go.
+fn download_verified(http: &Http, artifact: &Artifact, dest: &Path) -> Result<()> {
+    let first = preferred_source(http, artifact);
+    let mut failures = Vec::new();
+    for index in [first, 1 - first] {
+        let source = &artifact.sources[index];
+        eprintln!("Downloading {} from {}...", artifact.file_name, source.name);
+        let mut file =
+            File::create(dest).with_context(|| format!("failed to create {}", dest.display()))?;
+        match download(http, source, artifact.size, &mut file) {
+            Ok(actual) if actual == artifact.sha256 => {
+                file.sync_all()?;
+                return Ok(());
+            }
+            Ok(actual) => failures.push(format!(
+                "{}: SHA-256 mismatch (expected {}, got {actual})",
+                source.name, artifact.sha256
+            )),
+            Err(err) if err.is::<LocalWriteError>() => return Err(err),
+            Err(err) => failures.push(format!("{}: {err:#}", source.name)),
+        }
+        if index == first {
+            eprintln!("warning: {}; trying the other source", failures[0]);
+        }
+    }
+    bail!(
+        "could not download verified {}: {}",
+        artifact.file_name,
+        failures.join("; ")
+    )
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("failed to write temporary archive")]
+struct LocalWriteError(#[source] std::io::Error);
+
+/// Stream the archive with a progress bar, hashing as we go.
 /// Returns the lowercase hex SHA-256 of what was written.
-fn download(http: &Http, artifact: &Artifact, dest: &Path) -> Result<String> {
-    let mut resp = http.get_stream(&artifact.url)?;
-    let total = resp.content_length().unwrap_or(artifact.size);
+fn download(http: &Http, source: &DownloadSource, size: u64, file: &mut File) -> Result<String> {
+    let mut resp = http.get_stream(&source.url)?;
+    let total = resp.content_length().unwrap_or(size);
 
     let bar = ProgressBar::new(total);
     bar.set_style(
@@ -117,8 +142,6 @@ fn download(http: &Http, artifact: &Artifact, dest: &Path) -> Result<String> {
     );
     bar.set_message("Downloading");
 
-    let mut file =
-        File::create(dest).with_context(|| format!("failed to create {}", dest.display()))?;
     let mut hasher = Sha256::new();
     let mut buf = vec![0u8; 64 * 1024];
     let mut written: u64 = 0;
@@ -128,25 +151,15 @@ fn download(http: &Http, artifact: &Artifact, dest: &Path) -> Result<String> {
             break;
         }
         hasher.update(&buf[..n]);
-        file.write_all(&buf[..n])
-            .with_context(|| format!("failed to write {}", dest.display()))?;
+        file.write_all(&buf[..n]).map_err(LocalWriteError)?;
         written += n as u64;
         bar.inc(n as u64);
     }
-    file.sync_all()?;
     bar.finish_and_clear();
 
-    if artifact.size > 0 && written != artifact.size {
-        bail!(
-            "download incomplete: got {written} of {} bytes",
-            artifact.size
-        );
+    if size > 0 && written != size {
+        bail!("download incomplete: got {written} of {size} bytes");
     }
-    eprintln!(
-        "Downloaded {} ({:.1} MB)",
-        artifact.file_name,
-        written as f64 / 1e6
-    );
     Ok(to_hex(&hasher.finalize()))
 }
 
@@ -270,8 +283,74 @@ pub fn clean_stale_tmp(home: &JdkmHome) {
 mod tests {
     use super::*;
     use crate::installed::tests::temp_home;
+    use crate::remote::test_server::Server;
     use flate2::Compression;
     use flate2::write::GzEncoder;
+
+    fn artifact_for(server: &Server) -> Artifact {
+        Artifact {
+            file_name: "jdk.tar.gz".into(),
+            sources: ["GitHub", "TUNA"].map(|name| DownloadSource {
+                name,
+                url: format!("{}/{name}", server.url),
+            }),
+            size: 4,
+            sha256: to_hex(&Sha256::digest(b"good")),
+        }
+    }
+
+    #[test]
+    fn faster_probe_wins_but_corruption_falls_back_to_same_official_artifact() {
+        let server = Server::new(|path, probe| match (path, probe) {
+            ("/GitHub", true) => {
+                thread::sleep(Duration::from_millis(200));
+                (206, b"good".to_vec())
+            }
+            ("/TUNA", _) => (200, b"evil".to_vec()),
+            _ => (200, b"good".to_vec()),
+        });
+        let temp = tempfile::tempdir().unwrap();
+        let dest = temp.path().join("jdk");
+        download_verified(&Http::new().unwrap(), &artifact_for(&server), &dest).unwrap();
+        assert_eq!(server.downloads(), ["/TUNA", "/GitHub"]);
+        assert_eq!(fs::read(dest).unwrap(), b"good");
+    }
+
+    #[test]
+    fn github_wins_and_an_incomplete_download_restarts_on_mirror() {
+        let server = Server::new(|path, probe| match (path, probe) {
+            ("/TUNA", true) => (416, vec![]),
+            ("/GitHub", false) => (200, b"go".to_vec()),
+            _ => (200, b"good".to_vec()),
+        });
+        let temp = tempfile::tempdir().unwrap();
+        let dest = temp.path().join("jdk");
+        download_verified(&Http::new().unwrap(), &artifact_for(&server), &dest).unwrap();
+        assert_eq!(server.downloads(), ["/GitHub", "/TUNA"]);
+        assert_eq!(fs::read(dest).unwrap(), b"good");
+    }
+
+    #[test]
+    fn failed_probes_still_allow_get_but_no_unverified_install_or_leftovers() {
+        let server = Server::new(|path, probe| match (path, probe) {
+            ("/GitHub", false) => (200, b"evil".to_vec()),
+            _ => (404, vec![]),
+        });
+        let (_temp, home) = temp_home();
+        let err = download_and_install(
+            &home,
+            &Http::new().unwrap(),
+            &artifact_for(&server),
+            "temurin-21",
+            Os::Mac,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("SHA-256 mismatch"));
+        assert!(err.to_string().contains("404"));
+        assert_eq!(server.downloads(), ["/GitHub", "/TUNA"]);
+        assert_eq!(fs::read_dir(home.versions_dir()).unwrap().count(), 0);
+        assert_eq!(fs::read_dir(home.tmp_dir()).unwrap().count(), 0);
+    }
 
     /// Build a .tar.gz containing the given (path, contents) files.
     fn make_tar_gz(dest: &Path, files: &[(&str, &str)]) {
@@ -381,18 +460,6 @@ mod tests {
         let err =
             install_archive(&home, &archive, "temurin-21.0.5+11", Os::Linux, "t").unwrap_err();
         assert!(err.to_string().contains("already installed"));
-    }
-
-    #[test]
-    fn parses_checksum_files() {
-        let hex = "55a40abeb0e174fdc70f769b34b50b70c3967e0b12a643e6a3e23f9a582aac16";
-        assert_eq!(
-            parse_checksum(&format!("{hex}  OpenJDK21U.tar.gz\n")).unwrap(),
-            hex
-        );
-        assert_eq!(parse_checksum(&hex.to_uppercase()).unwrap(), hex);
-        assert!(parse_checksum("").is_err());
-        assert!(parse_checksum("abc file").is_err());
     }
 
     #[test]

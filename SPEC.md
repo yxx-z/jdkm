@@ -61,7 +61,7 @@ eval "$(jdkm init zsh)"
 
 `jdkm init zsh` 输出的脚本要做到：
 
-- 注册 zsh 的 `precmd` 钩子（不要用 `chpwd`，否则执行 `jdkm local` 之后不 cd 就不会生效），每次显示提示符前执行 `eval "$(jdkm env)"`。
+- 注册 zsh 的 `chpwd` 和 `precmd` 钩子：切目录时立即刷新，显示提示符前也刷新，使 `jdkm local` 不切目录仍生效。
 - 定义一个 `jdkm` shell 函数包装真实二进制：遇到 `jdkm shell <v>` 时在当前 shell 里 `export JDKM_VERSION=...`，其他子命令直接透传给二进制。
 - `jdkm env` 的输出必须**幂等**：先从 PATH 中移除旧的 `~/.jdkm/versions/*/bin` 条目，再把新的放到最前面，重复执行不会让 PATH 越来越长。
 - 版本没变化时尽量不输出、不改动。`jdkm env` 每次提示符都会执行，必须足够快（目标 < 10ms），不能访问网络。
@@ -85,11 +85,11 @@ eval "$(jdkm init zsh)"
 
 ## 下载源
 
-- **默认：GitHub Releases**。Temurin 每个大版本有独立的仓库，如 `adoptium/temurin21-binaries`。通过 GitHub API 列出 releases，匹配 `OpenJDK21U-jdk_aarch64_mac_hotspot_*.tar.gz` 这类资产文件名，以及对应的 `.sha256.txt` 校验文件。
+- **官方元数据**：通过 Temurin 的 GitHub 仓库或 Adoptium API 确定精确版本、平台、文件名及 SHA-256。
 - 未登录调用 GitHub API 有频率限制（每小时 60 次），要求：
   - 远程版本列表缓存到 `~/.jdkm/cache/`，设置合理的过期时间
   - 如果有环境变量 `GITHUB_TOKEN` 就带上
-- **镜像**：`config.toml` 中可以配置镜像地址，例如清华 TUNA 的 Adoptium 镜像（具体 URL 结构请先实际访问确认，不要凭记忆写死）。
+- **下载**：默认并发试读 GitHub 和清华 TUNA 上的同一文件，选快源，失败后换源并重新校验。不要求用户配置镜像。
 - 架构和平台从当前系统检测（aarch64 / x64，mac），不要写死。
 
 ## 安装流程要求

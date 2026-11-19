@@ -1,16 +1,18 @@
 //! Thin wrapper around a blocking reqwest client (rustls, no system OpenSSL).
 
+use std::io::{self, Read};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 use reqwest::StatusCode;
 use reqwest::blocking::{Client, RequestBuilder, Response};
-use reqwest::header::{ACCEPT, AUTHORIZATION, HeaderMap, LINK};
+use reqwest::header::{ACCEPT, AUTHORIZATION, HeaderMap, LINK, RANGE};
 use serde::de::DeserializeOwned;
 
 const API_TIMEOUT: Duration = Duration::from_secs(30);
 const GITHUB_API: &str = "https://api.github.com/";
 
+#[derive(Clone)]
 pub struct Http {
     client: Client,
     github_token: Option<String>,
@@ -21,9 +23,7 @@ impl Http {
         let client = Client::builder()
             .user_agent(concat!("jdkm/", env!("CARGO_PKG_VERSION")))
             .connect_timeout(Duration::from_secs(15))
-            // No overall timeout: a JDK download can take minutes.
-            // API calls set their own per-request timeout.
-            .timeout(None)
+            .timeout(Duration::from_secs(30))
             .build()
             .context("failed to create HTTP client")?;
         let github_token = std::env::var("GITHUB_TOKEN")
@@ -81,10 +81,28 @@ impl Http {
             .with_context(|| format!("failed to download {url}"))
     }
 
+    pub fn json<T: DeserializeOwned>(&self, url: &str) -> Result<T> {
+        serde_json::from_str(&self.get_text(url)?)
+            .with_context(|| format!("unexpected response from {url}"))
+    }
+
+    pub fn probe(&self, url: &str, bytes: u64, timeout: Duration) -> Result<()> {
+        let request = self
+            .client
+            .get(url)
+            .header(RANGE, format!("bytes=0-{}", bytes - 1))
+            .timeout(timeout);
+        let response = send(request, url)?.error_for_status()?;
+        let copied = io::copy(&mut response.take(bytes), &mut io::sink())?;
+        anyhow::ensure!(copied == bytes, "short probe response");
+        Ok(())
+    }
+
     /// Start a (possibly large) download; the caller streams the body.
     pub fn get_stream(&self, url: &str) -> Result<Response> {
         send(self.client.get(url), url)?
             .error_for_status()
+            .map_err(reqwest::Error::without_url)
             .with_context(|| format!("failed to download {url}"))
     }
 }
@@ -105,7 +123,7 @@ fn send(req: RequestBuilder, url: &str) -> Result<Response> {
         } else {
             format!("request to {url} failed")
         };
-        anyhow::Error::new(err).context(hint)
+        anyhow::Error::new(err.without_url()).context(hint)
     })
 }
 

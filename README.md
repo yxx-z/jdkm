@@ -2,7 +2,7 @@
 
 用 Rust 写的 JDK 版本管理工具（macOS / zsh）。
 
-- 从 **GitHub Releases** 安装 Eclipse Temurin，HTTP 使用 **rustls**，不依赖系统的 LibreSSL
+- 安装 Eclipse Temurin 时自动在 **GitHub Releases 和清华 TUNA 镜像**之间测速选源，按官方 SHA-256 校验；HTTP 使用 **rustls**
 - 三级版本切换：**全局默认**、**按目录**（`.java-version`）、**仅当前终端**
 - 切换时同时设置 `JAVA_HOME` 和 `PATH`，Maven / Gradle 可以直接使用
 - 下载后校验 SHA-256，安装过程是原子的，失败不会留下半个版本
@@ -44,7 +44,7 @@ cargo install --path .        # 安装到 ~/.cargo/bin/jdkm
 
 `eval "$(jdkm init zsh)"` 会做三件事：
 
-- 注册一个 `precmd` 钩子，每次显示提示符前根据当前目录切换 JDK。`jdkm local` 之后不需要 `cd` 就会生效。
+- 注册 `chpwd` 和 `precmd` 钩子：切目录时立即切换 JDK（包括 `cd project-b && mvn test`）；留在原目录运行 `jdkm local`，也会在下一次提示符前生效。
 - 定义一个 `jdkm` shell 函数，让 `jdkm shell <版本>` 能修改当前终端的环境。
 - 导出 `JDKM_HOOK=zsh`。如果没有配置钩子，`jdkm local/global` 会给出提示。
 
@@ -74,6 +74,10 @@ jdkm uninstall 17.0.13           # 卸载（必须能唯一确定一个版本）
 `21` 这样只写大版本号的写法，在 `install` 里表示"远程最新的 21.x"，在 `global`、`local`、`shell` 里表示"本地已安装的最新 21.x"。
 
 ## 版本解析规则
+
+安装时先通过官方元数据锁定具体构建、当前系统和架构对应的压缩包及 SHA-256，再从本机并发试读 GitHub 和清华 TUNA 上同一文件的前 256 KiB。先读完的源优先；3 秒内都未完成则优先尝试 GitHub。缺包、网络中断或摘要不符会从另一源重新下载同一个包，不因镜像滞后降级。两源都失败则不安装。
+
+版本列表和校验值不取自镜像。GitHub 元数据请求失败时可改用 Adoptium 官方 API；无法取得可信摘要，或两个官方摘要不一致时，拒绝安装。无需自建镜像、配置地区或手选下载源。
 
 优先级从高到低：
 

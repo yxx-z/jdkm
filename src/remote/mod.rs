@@ -4,6 +4,8 @@
 pub mod cache;
 pub mod http;
 pub mod temurin;
+#[cfg(test)]
+pub mod test_server;
 
 use anyhow::Result;
 
@@ -24,14 +26,17 @@ pub struct Release {
 #[derive(Debug, Clone)]
 pub struct Artifact {
     pub file_name: String,
-    pub url: String,
+    pub sources: [DownloadSource; 2],
     /// Size in bytes as reported by the source (0 if unknown).
     pub size: u64,
-    /// URL of a text file whose first word is the hex SHA-256 of the archive.
-    pub checksum_url: String,
-    /// An independent SHA-256 from the hosting service, if it provides one
-    /// (GitHub's asset `digest`). Cross-checked against `checksum_url`.
-    pub github_sha256: Option<String>,
+    /// Locked from official metadata before contacting any mirror.
+    pub sha256: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct DownloadSource {
+    pub name: &'static str,
+    pub url: String,
 }
 
 pub trait Distribution {

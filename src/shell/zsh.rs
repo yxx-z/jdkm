@@ -22,7 +22,7 @@ impl Shell for Zsh {
 }
 
 // Notes on the script:
-// * precmd (not chpwd), so `jdkm local` takes effect without a `cd`.
+// * chpwd updates before the next command; precmd also catches in-place changes.
 // * `jdkm shell ...` must change *this* shell's environment, which a child
 //   process cannot do; the function evals the binary's output instead.
 // * Re-sourcing .zshrc must not register the hook twice.
@@ -48,7 +48,10 @@ _jdkm_hook() {
   eval "$("$_jdkm_bin" env --shell zsh)"
 }
 
-typeset -ga precmd_functions
+typeset -ga precmd_functions chpwd_functions
+if (( ! ${chpwd_functions[(I)_jdkm_hook]} )); then
+  chpwd_functions=(_jdkm_hook $chpwd_functions)
+fi
 if (( ! ${precmd_functions[(I)_jdkm_hook]} )); then
   precmd_functions=(_jdkm_hook $precmd_functions)
 fi
